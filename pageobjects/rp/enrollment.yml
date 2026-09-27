@@ -1,0 +1,41 @@
+urlFragments:
+  base: "/myplan/$$string0$$"
+  funddetails: "/myplan/fund-details"
+  plancontact: "/myplan/plan-contact"
+  aboutus: "/myplan/about-us"
+  forms: "/myplan/print-form"
+  faq: "/myplan/faq"
+  systemreqirements: "/myplan/footer/systemRequirements"
+  security: "/myplan/footer/security"
+  privacy: "/myplan/footer/privacyPolicy"
+  tradeandservicemarks: "/myplan/footer/tradeMarksAndServiceMarks"
+  businesscontinuity: "/myplan/footer/businessContinuity"
+  codeofeEthics: "/myplan/footer/codeOfEthics"
+  articleautoenroll: "/myplan/article/auto-enroll-option.html"
+  articlequickenroll: "/myplan/article/quick-enroll-option.html"
+  articlehowmuchtocontribute: "/myplan/article/how-much-do-you-want-to-contribute.html"
+  articleexploreplanwebsite: "/myplan/article/explore-your-plan-website.html"
+  articleyourretirementincome: "/myplan/article/estimate-your-retirement-income.html"
+  articlefeelingemotional: "/myplan/article/feeling-emotional-about-your-investments.html"
+  articletargetdatefunds: "/myplan/article/target-date-funds.html"
+  articleoutsidetargetdatefunds: "/myplan/article/generic-outside-target-date-funds.html"
+  articlemodelportfolios: "/myplan/article/model-portfolio.html"
+
+locators:
+  common:
+    pageheader:
+      xpath: "//h1"
+    enrollNavButton:
+      selector: "#mr-top25 > button"
+    plancontact:
+      xpath: "//*[@id='rpNavbar']//a[contains(., 'Your plan contact')]"
+    aboutus:
+      xpath: "//*[@id='rpNavbar']//a[contains(.,'About Capital Group')]"
+    footerforms:
+      xpath: "//footer//a[contains(.,'Forms')]"
+    footerdisclosure:
+      xpath: "//footer//a[contains(., 'Important disclosures'))"
+    footersystemRequirements:
+      xpath: "//footer//a[contains(., 'System requirements')]"
+    footersecurity:
+      xpath: "//footer//a[contains(., 'Security')]"

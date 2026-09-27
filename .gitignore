@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ---------------------------------------------------------------------------
+# Local secrets / environment overrides - NEVER commit these
+# ---------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.secrets.yml
+!additionalconfigs/sample.secrets.yml
+
+# ---------------------------------------------------------------------------
+# Cucumber / Allure / JUnit output - regenerated on every run
+# ---------------------------------------------------------------------------
+report/*.json
+report/*.xml
+report/*.html
+report/allure-results/
+report/allure-report/
+report/metadata.json
+
+# ---------------------------------------------------------------------------
+# Browser profiles / cached downloads created by the tests
+# ---------------------------------------------------------------------------
+.chrome-profile/
+tmp/
+
+# ---------------------------------------------------------------------------
+# Editor / OS noise
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+*.log
+
