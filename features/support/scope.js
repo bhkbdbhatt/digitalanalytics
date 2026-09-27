@@ -85,6 +85,47 @@ const scope = {
      * @type {Object<string, string>}
      */
     requestedUrlPostData: {},
+
+    /**
+     * The puppeteer Browser for the running scenario, created by
+     * common.iCreateBrowserAsync from the Before hook in features/support/hooks.js
+     * and closed again in the After hook. Per-scenario rather than shared so a
+     * crash in one scenario cannot leave a zombie Chrome behind.
+     * @type {import("puppeteer-core").Browser | undefined}
+     */
+    browser: undefined,
+
+    /**
+     * The puppeteer Page under test. Re-created per scenario so cookies,
+     * localStorage and the request-interception buffers all start clean.
+     * @type {import("puppeteer-core").Page | undefined}
+     */
+    page: undefined,
+
+    /**
+     * True once the page under test has completed at least one navigation.
+     * common.iInjectCookiesAsync is driven off this so the configured cookies
+     * are applied exactly once, before the first navigation of a scenario.
+     * @type {boolean}
+     */
+    hasNavigated: false,
+
+    /**
+     * The site most recently selected by the `Set the default to "<x>" site`
+     * step. Steps that take a site but receive no explicit argument fall back
+     * to this, which is what lets the feature file read `I navigate to the
+     * "productSelector" page` without repeating the site name.
+     * @type {string | undefined}
+     */
+    defaultsite: undefined,
+
+    /**
+     * The analytics provider the current scenario is asserting on, e.g.
+     * "Adobe Analytics". Set by the `Set the default analytics provider to
+     * "<x>"` step and used to pick which beacon pattern the Then steps match.
+     * @type {string | undefined}
+     */
+    defaultprovider: undefined,
 };
 
 module.exports = scope;

@@ -1,4 +1,4 @@
-chromepath: C:\Program Files(x86)\Google\Chrome\Application\chrome.exe
+chromepath: C:\Program Files\Google\Chrome\Application\chrome.exe
 headless: false
 slowmo: 1000
 width: 1364
@@ -8,6 +8,10 @@ takesnapshots: true
 #default network settings
 networkidle: networkidle0
 networkwaittime: 30000
+
+#how long a single locator may take to appear before iWaitForElementAsync /
+# iGetWebElementAsync give up. Falls back to networkwaittime when absent.
+elementwaittime: 30000
 
 localchromepathprofile: C:\Users\Asus\AppData\Local\Google\Chrome\User Data\Default
 uselocalchromeprofile: false

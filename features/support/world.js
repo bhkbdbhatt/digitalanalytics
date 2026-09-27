@@ -4,8 +4,6 @@ const { setWorldConstructor } = require('@cucumber/cucumber')
 
 const { setDefaultTimeout } = require('@cucumber/cucumber')
 
-const puppeteer = require("puppeteer-core");
-
 const yaml = require("js-yaml");
 
 const fs = require("fs");
@@ -334,6 +332,14 @@ const World = function ({ attach, parameters }) {
     // arrays would have leaked beacons from earlier scenarios into later ones.
     scope.requestedUrls = [];
     scope.requestedUrlPostData = {};
+    scope.browser = undefined;
+    scope.page = undefined;
+    // Guards the "inject cookies on first navigation" behaviour in
+    // common.iNavigateAsync: cookies must be set before the very first
+    // navigation only, or the site re-issues them and clobbers our values.
+    scope.hasNavigated = false;
+    scope.defaultsite = undefined;
+    scope.defaultprovider = undefined;
     scope.configuration = {};
     scope.configuration.overridingsettings = {};
     logInitializer.initialize();

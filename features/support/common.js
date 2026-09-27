@@ -4,6 +4,7 @@ const urlresolver = require("url");
 const path = require("path");
 const fs = require("fs");
 const yaml = require("js-yaml");
+const puppeteer = require("puppeteer-core");
 // The baseline had `require("command - line - args")` - a space was injected
 // into the module name, which made every require of this file fail with
 // MODULE_NOT_FOUND and killed the whole Cucumber run before any step executed.
@@ -199,15 +200,20 @@ const iGetUrlSync = function (site, pageName) {
  * @returns {Promise<void>}
  */
 const iAttachPageSnapshotToResultsAsync = async function (page) {
-    scope.logger.debug(`Take Snapshot for : ${page.url()}.`);
-    if (!scope.configuration.browsersettings.takesnapshots) {
-        scope.logger.debug("Snapshots disabled.");
+    logSafely("debug", `Take Snapshot for : ${page.url()}.`);
+    const browsersettings = scope.configuration.browsersettings || {};
+    if (!browsersettings.takesnapshots) {
+        logSafely("debug", "Snapshots disabled.");
         return;
     }
-    scope.logger.debug("Snapshots are enabled");
-    scope.logger.trace("Taking SNapshot");
-    const buffer = await page.screenshot({ encoding: "base64", fullPage: true });
-    scope.logger.trace(`Snapshot in bffer.(${buffer.length} bytes)`);
+    logSafely("debug", "Snapshots are enabled");
+    logSafely("trace", "Taking SNapshot");
+    // The baseline passed encoding: "base64", which makes puppeteer return a
+    // base64 *string*. Cucumber's attach() writes its argument as binary, so a
+    // string produced a zero-byte (or corrupt) attachment in every report.
+    // Omitting the encoding yields the raw PNG Buffer that attach() expects.
+    const buffer = await page.screenshot({ fullPage: true, type: "png" });
+    logSafely("trace", `Snapshot in buffer.(${buffer.length} bytes)`);
     return await scope.attach(buffer, "image/png");
 };
 
@@ -221,7 +227,9 @@ const iAddRequestInterceptionAsync = async function (page) {
     scope.logger.trace(`setRequestInterception to true`);
     await page.setRequestInterception(true);
     scope.logger.trace('adding to page');
-    return await page.on('request', request => {
+    // `page.on` returns the page itself, so this is a registration only - the
+    // returned value is deliberately not propagated to callers.
+    page.on('request', request => {
         const url = request.url();
         scope.logger.verbosetrace(`Request intercepted : ${url}`);
         scope.requestedUrls.push(url);
@@ -230,7 +238,13 @@ const iAddRequestInterceptionAsync = async function (page) {
             scope.logger.verbosetrace(`Request intercepted has Postdata : ${pd}`);
             scope.requestedUrlPostData[url] = pd;
         }
-        request.continue();
+        // With interception on, every request must be continued or the load
+        // hangs forever. A rejection here (typically the target was torn down
+        // mid-flight) is an unhandled rejection otherwise, which kills the
+        // worker process and loses the whole scenario's results.
+        request.continue().catch(err => {
+            scope.logger.trace(`Unable to continue request ${url}: ${err.message}`);
+        });
     });
 };
 /**
@@ -298,24 +312,6 @@ const iGetWebElementAsync = async (site, pageName, locator) => {
 };
 
 /**
- * @param {string} site
- * @param {string} pageName
- * @param {string} locator
- * @param {string} inputText
- * @returns {Promise<ElementHandle>}}
- */
-const iGetShadowWebElementAsync = async (site, pageName, locator, inputText) => {
-    logSafely("trace", `Get web element : ${locator} locator on ${site}'s ${pageName} page`);
-    // KNOWN GAP (Phase 3 of the remediation plan). The baseline was a single log
-    // statement with no return value. Implementing this needs a decision on the
-    // shadow-piercing strategy (puppeteer `pierce/` query handler vs manual
-    // evaluateHandle traversal), so it deliberately throws instead of guessing.
-    throw new Error(
-        `iGetShadowWebElementAsync is not implemented yet (${site}.${pageName}.${locator}).`
-    );
-};
-
-/**
  * Folder holding the settings/*.yml files. Prefers environment.settingsfolder
  * from the environment config and otherwise falls back to the repo-level
  * settings folder that sits next to this package.
@@ -352,12 +348,352 @@ function iReadSettingsFileSync(filename) {
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN GAPS - referenced above / by the hooks but not present in this file.
-// Tracked for Phase 3 of the remediation plan:
-//   iGetElementByXpathAsync, iGetElementBySelectorAsync  (used by iGetWebElementAsync)
-//   iCreateBrowserAsync, iCreatePageAsync, iClosePageAsync, iCloseBrowserAsync,
-//   iNavigateAsync, iInjectCookiesAsync, iWaitForElementAsync
+// Browser / page lifecycle
 // ---------------------------------------------------------------------------
+
+/**
+ * Resolves the effective element wait time, preferring an explicit
+ * `elementwaittime` setting and falling back to `networkwaittime`.
+ * @returns {number} milliseconds
+ */
+function iGetElementWaitTimeSync() {
+    const browsersettings = scope.configuration.browsersettings || {};
+    const configured = browsersettings.elementwaittime || browsersettings.networkwaittime;
+    const value = Number(configured);
+    return Number.isFinite(value) && value >= 0 ? value : 30000;
+}
+
+/**
+ * Resolves the configured navigation wait strategy, e.g. "networkidle0".
+ * @returns {string} a puppeteer PuppeteerLifeCycleEvent
+ */
+function iGetNavigationWaitUntilSync() {
+    const browsersettings = scope.configuration.browsersettings || {};
+    return browsersettings.networkidle || "networkidle0";
+}
+
+/**
+ * Resolves the navigation timeout.
+ * @returns {number} milliseconds
+ */
+function iGetNavigationTimeoutSync() {
+    const browsersettings = scope.configuration.browsersettings || {};
+    const value = Number(browsersettings.networkwaittime);
+    return Number.isFinite(value) && value > 0 ? value : 30000;
+}
+
+/**
+ * Wraps a value coming from YAML/env (which is a string) in a boolean.
+ * @param {*} value
+ * @returns {boolean}
+ */
+function iAsBoolean(value) {
+    if (typeof value === "boolean") return value;
+    return String(value).toLowerCase() === "true";
+}
+
+/**
+ * Launches the Chrome instance described by settings/browserSettings.yml and
+ * stores it on scope.browser. Idempotent: a live browser is reused.
+ * @returns {Promise<import("puppeteer-core").Browser>}
+ */
+const iCreateBrowserAsync = async function () {
+    if (scope.browser) {
+        const connected = scope.browser.connected === undefined || scope.browser.connected;
+        if (connected) {
+            scope.logger.debug("Browser already running - reusing it.");
+            return scope.browser;
+        }
+        scope.logger.warn("Found a disconnected browser - replacing it.");
+        scope.browser = undefined;
+    }
+
+    const browsersettings = scope.configuration.browsersettings || {};
+    const chromepath = browsersettings.chromepath;
+    if (!chromepath) {
+        throw new Error(
+            "browsersettings.chromepath is not configured. Set it in settings/browserSettings.yml or with DAT_browserSettings_chromepath."
+        );
+    }
+    if (!fs.existsSync(chromepath)) {
+        throw new Error(
+            `browsersettings.chromepath does not exist: ${chromepath}. Override it with DAT_browserSettings_chromepath.`
+        );
+    }
+
+    const width = Number(browsersettings.width) || 1364;
+    const height = Number(browsersettings.height) || 1024;
+    const slowmo = Number(browsersettings.slowmo) || 0;
+
+    const launchoptions = {
+        executablePath: chromepath,
+        headless: iAsBoolean(browsersettings.headless),
+        slowMo: slowmo > 0 ? slowmo : undefined,
+        defaultViewport: { width: width, height: height },
+        args: [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            `--window-size=${width},${height}`,
+        ],
+    };
+
+    // Puppeteer will not launch a persistent profile that is already locked by
+    // a running Chrome, so this is opt-in via uselocalchromeprofile.
+    if (iAsBoolean(browsersettings.uselocalchromeprofile)) {
+        const profile = browsersettings.localchromeprofile;
+        if (!profile) {
+            throw new Error(
+                "browsersettings.uselocalchromeprofile is true but localchromeprofile is not set."
+            );
+        }
+        launchoptions.userDataDir = path.isAbsolute(profile) ? profile : path.join(process.cwd(), profile);
+    }
+
+    scope.logger.info(
+        `Launching Chrome (headless=${launchoptions.headless}, slowMo=${slowmo}, viewport=${width}x${height})`
+    );
+    scope.browser = await puppeteer.launch(launchoptions);
+    return scope.browser;
+};
+
+/**
+ * Closes the page under test, tolerating an already-closed page.
+ * @returns {Promise<void>}
+ */
+const iClosePageAsync = async function () {
+    if (!scope.page) {
+        return;
+    }
+    const page = scope.page;
+    scope.page = undefined;
+    try {
+        if (!page.isClosed()) {
+            await page.close();
+        }
+    } catch (err) {
+        // A page whose target already died throws on close; that is fine during
+        // teardown as long as we still release the reference.
+        logSafely("warn", `Ignoring error while closing the page: ${err.message}`);
+    }
+};
+
+/**
+ * Closes the page (if any) and then the browser, releasing both scope fields
+ * even when teardown throws.
+ * @returns {Promise<void>}
+ */
+const iCloseBrowserAsync = async function () {
+    await iClosePageAsync();
+    if (!scope.browser) {
+        return;
+    }
+    const browser = scope.browser;
+    scope.browser = undefined;
+    try {
+        await browser.close();
+    } catch (err) {
+        logSafely("warn", `Ignoring error while closing the browser: ${err.message}`);
+    }
+};
+
+/**
+ * Creates the page under test, applies the configured timeouts and starts
+ * request interception so the analytics assertions have something to inspect.
+ * Any previous page is closed first to keep per-scenario state clean.
+ * @returns {Promise<import("puppeteer-core").Page>}
+ */
+const iCreatePageAsync = async function () {
+    await iClosePageAsync();
+    if (!scope.browser) {
+        await iCreateBrowserAsync();
+    }
+
+    const page = await scope.browser.newPage();
+    page.setDefaultTimeout(iGetElementWaitTimeSync());
+    page.setDefaultNavigationTimeout(iGetNavigationTimeoutSync());
+
+    await iAddRequestInterceptionAsync(page);
+
+    scope.page = page;
+    scope.hasNavigated = false;
+    scope.logger.info("Created a new page and enabled request interception.");
+    return page;
+};
+
+/**
+ * Adds the cookies from environment.addCookiesOnFirstNavigation. Puppeteer
+ * needs a url (or domain/path) on every cookie, so the navigation target is
+ * used to scope them.
+ * @param {string} url absolute url the cookies must be valid for
+ * @returns {Promise<void>}
+ */
+const iInjectCookiesAsync = async function (url) {
+    const cookies = scope.sites.cookiesToAdd;
+    if (!cookies || cookies.length === 0) {
+        logSafely("debug", "No cookies to inject.");
+        return;
+    }
+    if (!scope.page) {
+        throw new Error("Cannot inject cookies because there is no page. Call iCreatePageAsync first.");
+    }
+    const withurl = cookies.map(cookie => Object.assign({}, cookie, { url: url }));
+    scope.logger.debug(`Injecting ${withurl.length} cookie(s) before the first navigation.`);
+    await scope.page.setCookie(...withurl);
+};
+
+/**
+ * Navigates the page under test to a logical page of a site, injecting the
+ * configured cookies on the first navigation of the scenario.
+ * @param {string} site
+ * @param {string} [pageName] defaults to the site's defaultpage
+ * @returns {Promise<string>} the url navigated to
+ */
+const iNavigateAsync = async function (site, pageName) {
+    if (!scope.page) {
+        await iCreatePageAsync();
+    }
+    const url = iGetUrlSync(site, pageName);
+    if (!scope.hasNavigated) {
+        await iInjectCookiesAsync(url);
+    }
+    scope.logger.info(`Navigating to ${site}/${pageName || "(default)"} -> ${url}`);
+    const response = await scope.page.goto(url, {
+        waitUntil: iGetNavigationWaitUntilSync(),
+        timeout: iGetNavigationTimeoutSync(),
+    });
+    if (response && !response.ok()) {
+        scope.logger.warn(`Navigation to ${url} returned HTTP ${response.status()}.`);
+    }
+    scope.hasNavigated = true;
+    return url;
+};
+
+// ---------------------------------------------------------------------------
+// Element lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Turns a resolved locator into a puppeteer query string. XPath locators are
+ * addressed through puppeteer's `xpath/` query handler - the standalone
+ * `page.$x` / `page.waitForXPath` helpers were removed in puppeteer v22.
+ * @param {{xpath?: string, selector?: string}} by
+ * @param {string} [prefix] an extra query handler to wrap with, e.g. "pierce"
+ * @returns {string}
+ */
+function iToQueryString(by, prefix) {
+    const base = by.xpath ? `xpath/${by.xpath}` : by.selector;
+    return prefix ? `${prefix}/${base}` : base;
+}
+
+/**
+ * Waits for a locator on a site page to appear in the DOM.
+ * @param {string} site
+ * @param {string} pageName
+ * @param {string} locator
+ * @returns {Promise<import("puppeteer-core").ElementHandle>}
+ */
+const iWaitForElementAsync = async function (site, pageName, locator) {
+    if (!scope.page) {
+        throw new Error("No page is open. Navigate or call iCreatePageAsync before waiting for an element.");
+    }
+    const by = iGetLocatorSync(site, pageName, locator);
+    const query = iToQueryString(by);
+    logSafely("info", `Waiting for ${query}`);
+    return await iWaitForElementHandleAsync(query, `${site}.${pageName}.${locator}`);
+};
+
+/**
+ * Waits for a query to resolve to an element, translating puppeteer's
+ * TimeoutError into the framework's ElementNotFoundError.
+ *
+ * Note that `page.waitForSelector` *rejects* on timeout rather than resolving
+ * null, so the null check below is only a belt-and-braces guard - the
+ * try/catch is what actually produces the error type callers expect.
+ * @param {string} query
+ * @param {string} description used in the error message
+ * @param {number|undefined} timeout
+ * @returns {Promise<import("puppeteer-core").ElementHandle>}
+ */
+async function iWaitForElementHandleAsync(query, description, timeout) {
+    const waittime = timeout === undefined ? iGetElementWaitTimeSync() : timeout;
+    let element;
+    try {
+        element = await scope.page.waitForSelector(query, { timeout: waittime });
+    } catch (err) {
+        throw new ElementNotFoundError(
+            query,
+            `Waiting for ${description} timed out after ${waittime}ms.`
+        );
+    }
+    if (!element) {
+        throw new ElementNotFoundError(query, `The element was not present in the DOM.`);
+    }
+    return element;
+}
+
+/**
+ * Resolves an XPath expression to an element handle, waiting for it to appear.
+ * @param {string} xpath
+ * @param {number} [timeout]
+ * @returns {Promise<import("puppeteer-core").ElementHandle>}
+ */
+const iGetElementByXpathAsync = async function (xpath, timeout) {
+    if (!scope.page) {
+        throw new Error("No page is open. Cannot look up an element by xpath.");
+    }
+    const query = iToQueryString({ xpath: xpath });
+    return await iWaitForElementHandleAsync(query, `xpath ${xpath}`, timeout);
+};
+
+/**
+ * Resolves a CSS selector to an element handle, waiting for it to appear.
+ * @param {string} selector
+ * @param {number} [timeout]
+ * @returns {Promise<import("puppeteer-core").ElementHandle>}
+ */
+const iGetElementBySelectorAsync = async function (selector, timeout) {
+    if (!scope.page) {
+        throw new Error("No page is open. Cannot look up an element by selector.");
+    }
+    return await iWaitForElementHandleAsync(selector, `selector ${selector}`, timeout);
+};
+
+/**
+ * Resolves a locator that lives inside one or more shadow roots by prefixing
+ * the query with puppeteer's `pierce` handler, which recurses through open
+ * shadow roots. When inputText is supplied the element is treated as a text
+ * entry: its current contents are selected and replaced.
+ * @param {string} site
+ * @param {string} pageName
+ * @param {string} locator
+ * @param {string} [inputText] text to type into the element, if it is an input
+ * @returns {Promise<import("puppeteer-core").ElementHandle>}
+ */
+const iGetShadowWebElementAsync = async function (site, pageName, locator, inputText) {
+    if (!scope.page) {
+        throw new Error("No page is open. Cannot look up a shadow-dom element.");
+    }
+    const by = iGetLocatorSync(site, pageName, locator);
+    const query = iToQueryString(by, "pierce");
+    logSafely("info", `Waiting for ${query} inside shadow dom`);
+
+    let element;
+    try {
+        element = await iWaitForElementHandleAsync(query, `${site}.${pageName}.${locator} (shadow dom)`);
+    } catch (err) {
+        throw new ElementNotFoundError(query, `Piercing shadow roots for ${site}.${pageName}.${locator} found nothing.`);
+    }
+
+    if (inputText !== undefined && inputText !== null) {
+        // Triple click selects whatever is already in the field so typing
+        // replaces it instead of appending.
+        await element.click({ clickCount: 3 });
+        await element.type(String(inputText));
+        logSafely("debug", `Typed "${inputText}" into ${site}.${pageName}.${locator}`);
+    }
+    return element;
+};
 
 // The baseline had two different misspellings of this function name - the
 // definition and the call site in world.js disagreed. Both historical spellings
@@ -383,5 +719,17 @@ module.exports = {
     iGetShadowWebElementAsync,
     iGetSettingsFolderPathSync,
     iReadSettingsFileSync,
+    iGetElementWaitTimeSync,
+    iGetNavigationWaitUntilSync,
+    iGetNavigationTimeoutSync,
+    iCreateBrowserAsync,
+    iCreatePageAsync,
+    iClosePageAsync,
+    iCloseBrowserAsync,
+    iNavigateAsync,
+    iInjectCookiesAsync,
+    iWaitForElementAsync,
+    iGetElementByXpathAsync,
+    iGetElementBySelectorAsync,
     ElementNotFoundError,
 };

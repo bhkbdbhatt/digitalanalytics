@@ -6,28 +6,24 @@
   "author": "INYBDB",
   "license": "ISC",
   "dependencies": {
-    "allure-commandline": "^2.29.0",
-    "allure-cucumberjs": "^3.0.0-beta.2",
-    "allure-js-commons": "^3.0.0-beta.2",
-    "chai": "^5.1.1",
-    "chai-as-promised": "^7.1.2",
+    "@cucumber/cucumber": "^10.8.0",
     "command-line-args": "^5.2.1",
-    "cucumber": "^6.0.7",
-    "cucumber-html-reporter": "^7.1.1",
     "dotenv": "^16.4.5",
     "js-yaml": "^4.1.0",
     "log4js": "^6.9.1",
-    "mocha": "^10.4.0",
-    "moment": "^2.30.1",
-    "moment-timezone": "^0.5.45",
-    "puppeteer-core": "^22.10.0",
-    "tmp": "^0.2.3"
+    "puppeteer-core": "^22.10.0"
+  },
+  "devDependencies": {
+    "allure-commandline": "^2.29.0"
   },
   "scripts":{
-    "test":"npx cucumberjs -f json:./report/cucumber.json -f junit:./report/cucumber-junit.xml -f html:./report/cucumber.html",
-    "demo":"npx cucumberjs -f json:./report/cucumber.json -f junit:./report/cucumber-junit.xml -f html:./report/cucumber.html -t @demo",
+    "test":"cucumber-js -f json:./report/cucumber.json -f junit:./report/cucumber-junit.xml -f html:./report/cucumber.html",
+    "demo":"cucumber-js -f json:./report/cucumber.json -f junit:./report/cucumber-junit.xml -f html:./report/cucumber.html -t @demo",
+    "dryrun":"cucumber-js --dry-run",
+    "lint":"node tools/syntaxcheck.js",
+    "check":"npm run lint && npm run dryrun",
     "allure:generate":"npx allure generate report --clean -o ./report/allure-report",
-    "alure:open":"npx allure open ./report/allure-report"
+    "allure:open":"npx allure open ./report/allure-report"
   },
   "keywords":[
     "cucumber",
